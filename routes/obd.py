@@ -5,6 +5,6 @@ import requests
 obd = Blueprint("obd", __name__)
 
 
-@obd.route("/", methods=["GET"])
+@obd.route("/obd", methods=["GET"])
 def get_obd():
-    return make_response("OK", 200)
+    return make_response("Request for OBD", 200)
