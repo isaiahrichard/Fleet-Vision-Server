@@ -1,9 +1,7 @@
 from flask import Blueprint, request, jsonify, current_app
 from tensorflow.keras.models import load_model
 import numpy as np
-import tensorflow as tf
 import cv2
-import io
 import os
 import logging
 import time
@@ -22,7 +20,7 @@ base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 model_dir = os.path.join(base_dir, 'models')
 
 try:
-    saved_model = load_model(os.path.join(model_dir, 'saved_model_MobileNetV2_32'))
+    saved_model = load_model(os.path.join(model_dir, 'saved_model_MobileNetV3Small_16'))
     label_to_index = np.load(os.path.join(model_dir, 'label_mapping.npy'), allow_pickle=True).item()
     index_to_label = {v: k for k, v in label_to_index.items()}
     logger.info("Model and label mappings loaded successfully")
@@ -126,7 +124,7 @@ def predict():
 def get_model_info():
     return jsonify({
         "message": "Model is ready for predictions",
-        "model_type": "MobileNetV2",
+        "model_type": "MobileNetV3Small",
         "input_shape": saved_model.input_shape[1:],
         "num_classes": len(label_to_index),
         "label_mapping": label_to_index,
