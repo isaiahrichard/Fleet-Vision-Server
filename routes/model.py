@@ -79,18 +79,21 @@ def predict():
 
         # Read the image file
         img_bytes = file.read()
+        logger.info(f"Read image with size {len(img_bytes)} bytes")
 
         # Validate image
         try:
             validate_image(img_bytes)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
+        logger.info(f"Validated image successfully")
 
         # Measure image processing time
         preprocess_start_time = time.time()
         img_array = preprocess_image(img_bytes)
         preprocess_end_time = time.time()
         image_processing_time = preprocess_end_time - preprocess_start_time
+        logger.info(f"Processed image successfully")
 
         # Make prediction (add batch dimension for single image)
         prediction_start_time = time.time()
