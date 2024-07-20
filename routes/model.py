@@ -123,6 +123,52 @@ def predict():
         return jsonify({"error": "An error occurred during prediction"}), 500
 
 
+@model.route("/batchPredict", methods=["POST"])
+def batch_predict():
+    if 'images' not in request.files:
+        logger.warning("No images provided in the request")
+        return jsonify({"error": "No images provided"}), 400
+
+    image_files = request.files.getlist('images')
+
+    try:
+        total_start_time = time.time()
+        batch_results = []
+
+        for file in image_files:
+            try:
+                img_bytes = file.read()
+                validate_image(img_bytes)
+                img_array = preprocess_image(img_bytes)
+                predictions = saved_model.predict(np.expand_dims(img_array, axis=0))
+                predicted_labels = [index_to_label[i] for i, prob in enumerate(predictions[0]) if
+                                    prob > PREDICTION_THRESHOLD]
+
+                batch_results.append({
+                    "filename": file.filename,
+                    "predictions": predicted_labels
+                })
+            except Exception as e:
+                batch_results.append({
+                    "filename": file.filename,
+                    "error": str(e)
+                })
+
+        total_end_time = time.time()
+        total_processing_time = total_end_time - total_start_time
+
+        logger.info(
+            f"Batch prediction completed. Processed {len(image_files)} images in {total_processing_time:.4f} seconds")
+
+        return jsonify({
+            "results": batch_results,
+            "total_processing_time": total_processing_time
+        })
+    except Exception as e:
+        logger.error(f"Error during batch prediction: {str(e)}", exc_info=True)
+        return jsonify({"error": "An error occurred during batch prediction"}), 500
+
+
 @model.route("/modelInfo", methods=["GET"])
 def get_model_info():
     return jsonify({
