@@ -6,7 +6,7 @@ import os
 import logging
 import time
 import threading
-import queue
+from queue import Queue, Empty
 
 stream = Blueprint("stream", __name__)
 
@@ -47,8 +47,8 @@ except Exception as e:
     raise
 
 # Queues for face and body frames
-face_queue = queue.Queue(maxsize=QUEUE_SIZE)
-body_queue = queue.Queue(maxsize=QUEUE_SIZE)
+face_queue = Queue(maxsize=QUEUE_SIZE)
+body_queue = Queue(maxsize=QUEUE_SIZE)
 
 
 def preprocess_image(frame, target_size=(224, 224)):
@@ -72,19 +72,26 @@ def predict_batch(batch, model, index_to_label):
 
 
 def process_stream(stream_url, queue):
-    cap = cv2.VideoCapture(stream_url)
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            logger.error(f"Failed to read frame from {stream_url}")
-            break
+        cap = cv2.VideoCapture(stream_url)
+        if not cap.isOpened():
+            logger.error(f"Failed to open stream: {stream_url}")
+            time.sleep(5)  # Wait before retrying
+            continue
 
-        processed_frame = preprocess_image(frame)
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                logger.error(f"Failed to read frame from {stream_url}")
+                break
 
-        if not queue.full():
-            queue.put(processed_frame)
+            processed_frame = preprocess_image(frame)
 
-    cap.release()
+            if not queue.full():
+                queue.put(processed_frame)
+
+        cap.release()
+        time.sleep(5)  # Wait before reconnecting
 
 
 def process_model_queue(queue, model, index_to_label, model_name):
@@ -105,7 +112,7 @@ def process_model_queue(queue, model, index_to_label, model_name):
                     )
 
                 batch = []
-        except queue.Empty:
+        except Empty:
             if batch:
                 start_time = time.time()
                 predictions = predict_batch(batch, model, index_to_label)
@@ -120,12 +127,8 @@ def process_model_queue(queue, model, index_to_label, model_name):
 
 
 def start_streams():
-    face_stream_url = (
-        "http://192.168.2.175:80/stream"  # Replace with actual IP for face stream
-    )
-    body_stream_url = (
-        "http://192.168.2.176:80/stream"  # Replace with actual IP for body stream
-    )
+    face_stream_url = "http://192.168.2.175/stream"  # Adjust if needed
+    body_stream_url = "http://192.168.2.176/stream"  # Adjust if needed
 
     # Start stream processing threads
     threading.Thread(
