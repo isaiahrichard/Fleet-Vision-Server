@@ -121,10 +121,10 @@ def process_model_queue(queue, model, index_to_label, model_name):
 
 def start_streams():
     face_stream_url = (
-        "http://192.168.2.175:81/stream"  # Replace with actual IP for face stream
+        "http://192.168.2.175:80/stream"  # Replace with actual IP for face stream
     )
     body_stream_url = (
-        "http://192.168.2.176:81/stream"  # Replace with actual IP for body stream
+        "http://192.168.2.176:80/stream"  # Replace with actual IP for body stream
     )
 
     # Start stream processing threads
