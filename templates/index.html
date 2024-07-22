@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ESP32-CAM Stream Viewer</title>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        padding: 20px;
+        background-color: #f0f0f0;
+      }
+      .container {
+        display: flex;
+        justify-content: space-around;
+        flex-wrap: wrap;
+      }
+      .stream,
+      .predictions,
+      .info {
+        background-color: white;
+        border-radius: 10px;
+        padding: 20px;
+        margin: 10px;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+      }
+      h1,
+      h2 {
+        color: #333;
+      }
+      #video-feed {
+        max-width: 100%;
+        height: auto;
+      }
+      #stream-error {
+        color: red;
+      }
+      #stream-info,
+      #eyes-predictions,
+      #actions-predictions {
+        font-family: monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>ESP32-CAM Stream Viewer</h1>
+    <div class="container">
+      <div class="stream">
+        <h2>Live Stream</h2>
+        <img
+          id="video-feed"
+          src="{{ url_for('stream_viewer.video_feed') }}"
+          alt="Live stream"
+        />
+        <p id="stream-error"></p>
+      </div>
+      <div class="predictions">
+        <h2>Predictions</h2>
+        <p>Eyes State: <span id="eyes-predictions"></span></p>
+        <p>Driver Actions: <span id="actions-predictions"></span></p>
+      </div>
+      <div class="info">
+        <h2>Stream Info</h2>
+        <pre id="stream-info"></pre>
+      </div>
+    </div>
+
+    <script>
+      function updatePredictions() {
+        $.getJSON("/predictions", function (data) {
+          $("#eyes-predictions").text(data.eyes_predictions.join(", "));
+          $("#actions-predictions").text(data.actions_predictions.join(", "));
+        }).fail(function (jqXHR, textStatus, errorThrown) {
+          console.error("Error fetching predictions:", textStatus, errorThrown);
+        });
+      }
+
+      function updateStreamInfo() {
+        $.getJSON("/stream_info", function (data) {
+          $("#stream-info").html(
+            `Frame Buffer: ${data.frame_buffer_size}\n` +
+              `Prediction Buffer: ${data.prediction_buffer_size}\n` +
+              `Display Queue: ${data.display_queue_size}\n` +
+              `Batch Size: ${data.batch_size}\n` +
+              `FPS: ${data.fps}`
+          );
+        }).fail(function (jqXHR, textStatus, errorThrown) {
+          console.error("Error fetching stream info:", textStatus, errorThrown);
+        });
+      }
+
+      document.getElementById("video-feed").onerror = function () {
+        document.getElementById("stream-error").textContent =
+          "Error loading video stream";
+      };
+
+      setInterval(updatePredictions, 1000); // Update predictions every second
+      setInterval(updateStreamInfo, 1000); // Update stream info every second
+    </script>
+  </body>
+</html>
