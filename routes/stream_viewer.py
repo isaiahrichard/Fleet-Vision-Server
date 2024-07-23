@@ -8,6 +8,7 @@ import logging
 import time
 import threading
 from queue import Queue, Empty
+from helpers.model import classify_eye_batch, classify_main_batch, add_event
 
 stream_viewer = Blueprint("stream_viewer", __name__)
 
@@ -101,8 +102,12 @@ def process_stream(stream_url):
 
 
 def process_predictions():
+    bufferFull = True
+    eyes_predictions_buffer = []
+    actions_predictions_buffer = []
     while True:
         try:
+            bufferFull = not bufferFull
             batch = frame_queue.get(timeout=1)
             start_time = time.time()
             eyes_predictions = predict_batch(batch, eyes_model, eyes_index_to_label)
@@ -110,6 +115,22 @@ def process_predictions():
                 batch, actions_model, actions_index_to_label
             )
             end_time = time.time()
+            eyes_predictions_buffer += eyes_predictions
+            actions_predictions_buffer += actions_predictions
+
+            if bufferFull:
+                eye_event_label = classify_eye_batch(eyes_predictions_buffer)
+                action_event_label = classify_main_batch(actions_predictions_buffer)
+                add_event(
+                    {"frameStart": 0, "frameEnd": 100, "label": eye_event_label}, False
+                )
+                add_event(
+                    {"frameStart": 0, "frameEnd": 100, "label": action_event_label},
+                    True,
+                )
+
+                eyes_predictions_buffer = []
+                actions_predictions_buffer = []
 
             logger.info(
                 f"Batch processed. Eyes: {eyes_predictions[:5]}..., Actions: {actions_predictions[:5]}..."
