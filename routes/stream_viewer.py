@@ -155,7 +155,7 @@ def index():
 
 @stream_viewer.route("/face_stream")
 def face_stream():
-    face_stream_url = "http://172.20.10.3/stream"  # Adjust if needed
+    face_stream_url = "http://172.20.10.4/stream"  # Adjust if needed
     return Response(
         process_stream(face_stream_url, binary_eyes_state_model, eyes_index_to_label),
         mimetype="text/event-stream",
@@ -164,7 +164,7 @@ def face_stream():
 
 @stream_viewer.route("/body_stream")
 def body_stream():
-    body_stream_url = "http://172.20.10.4/stream"  # Adjust if needed
+    body_stream_url = "http://172.20.10.3/stream"  # Adjust if needed
     return Response(
         process_stream(
             body_stream_url, binary_distraction_model, distraction_index_to_label, True
