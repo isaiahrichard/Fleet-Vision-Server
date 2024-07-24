@@ -83,6 +83,7 @@ def process_stream(stream_url):
     currBufferSize = 0
     eyes_predictions_buffer = []
     actions_predictions_buffer = []
+    prevEvent = {}
     while True:
         batch_frames = []
         batch_start_frame_count = frame_count
@@ -112,6 +113,12 @@ def process_stream(stream_url):
             if currBufferSize >= EVENT_BATCH_SIZE:
                 # eye_event_label = classify_eye_batch(eyes_predictions_buffer)
                 action_event_label = classify_main_batch(actions_predictions_buffer)
+
+                cont = (
+                    1
+                    if "label" in prevEvent and prevEvent["label"] == action_event_label
+                    else 0
+                )
                 # add_eye_event(
                 #     {
                 #         "frameStart": batch_start_frame_count,
@@ -123,7 +130,9 @@ def process_stream(stream_url):
                     "frameStart": frame_count - EVENT_BATCH_SIZE,
                     "frameEnd": frame_count,
                     "label": action_event_label,
+                    "cont": cont,
                 }
+                prevEvent = action_event
 
                 # eyes_predictions_buffer = []
                 actions_predictions_buffer = []

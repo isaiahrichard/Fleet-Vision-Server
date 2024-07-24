@@ -1,10 +1,8 @@
 from collections import Counter
 
-action_event_list = []
-eye_event_list = []
-
 
 def classify_main_batch(action_batch):
+    label = Counter(action_batch).most_common(1)[0][0]
     return Counter(action_batch).most_common(1)[0][0]
 
 
