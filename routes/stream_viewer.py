@@ -6,14 +6,10 @@ import os
 import json
 import logging
 import time
-import threading
-from queue import Queue, Empty
 from helpers.model import (
-    classify_eye_batch,
     classify_main_batch,
 )
 import base64
-from flask_cors import cross_origin
 
 stream_viewer = Blueprint("stream_viewer", __name__)
 
@@ -92,9 +88,10 @@ def predict_batch(batch, model, index_to_label, is_distraction_model=False):
 
 
 def process_stream(stream_url, model, index_to_label, is_distraction_model=False):
+    global frame_count
     cap = cv2.VideoCapture(stream_url)
     currBufferSize = 0
-    actions_predictions_buffer = []
+    predictions_buffer = []
     prevEvent = {}
     while True:
         batch_frames = []
@@ -114,28 +111,27 @@ def process_stream(stream_url, model, index_to_label, is_distraction_model=False
             predictions = predict_batch(
                 processed_batch, model, index_to_label, is_distraction_model
             )
-            actions_predictions_buffer += predictions
+            predictions_buffer += predictions
 
-            action_event = 0
+            event = 0
 
             if currBufferSize >= EVENT_BATCH_SIZE:
-                action_event_label = classify_main_batch(actions_predictions_buffer)
+                event_label = classify_main_batch(predictions_buffer)
 
                 cont = (
                     1
-                    if "label" in prevEvent and prevEvent["label"] == action_event_label
+                    if "label" in prevEvent and prevEvent["label"] == event_label
                     else 0
                 )
-                action_event = {
+                event = {
                     "frameStart": frame_count - EVENT_BATCH_SIZE,
                     "frameEnd": frame_count,
-                    "label": action_event_label,
+                    "label": event_label,
                     "cont": cont,
                 }
-                prevEvent = action_event
+                prevEvent = event
 
-                # eyes_predictions_buffer = []
-                actions_predictions_buffer = []
+                predictions_buffer = []
                 currBufferSize = 0
 
             middle_frame = batch_frames[BATCH_SIZE // 2]
@@ -145,9 +141,9 @@ def process_stream(stream_url, model, index_to_label, is_distraction_model=False
             yield (
                 f"data: {{\n"
                 f'data: "image": "{frame_base64}",\n'
-                f'data: "action_event": "{action_event}",\n'
+                f'data: "event": "{event}",\n'
                 f'data: "first_frame_num": "{batch_start_frame_count + 1}",\n'
-                f'data: "actions_predictions": {json.dumps(predictions)}\n'
+                f'data: "predictions": {json.dumps(predictions)}\n'
                 f"data: }}\n\n"
             )
 
