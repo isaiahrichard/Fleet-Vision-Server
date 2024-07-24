@@ -1,81 +1,146 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ESP32-CAM Stream Viewer</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f0f0f0; }
-        .container { display: flex; justify-content: space-around; flex-wrap: wrap; }
-        .stream, .predictions, .info { background-color: white; border-radius: 10px; padding: 20px; margin: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
-        h1, h2 { color: #333; }
-        #video-feed { max-width: 100%; height: auto; }
-        #stream-error { color: red; }
-        #stream-info, #eyes-predictions, #actions-predictions { font-family: monospace; }
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        padding: 20px;
+        background-color: #f0f0f0;
+      }
+      .container {
+        display: flex;
+        justify-content: space-around;
+        flex-wrap: wrap;
+      }
+      .stream,
+      .predictions,
+      .info {
+        background-color: white;
+        border-radius: 10px;
+        padding: 20px;
+        margin: 10px;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+      }
+      h1,
+      h2,
+      h3 {
+        color: #333;
+      }
+      .video-feed {
+        max-width: 100%;
+        height: auto;
+      }
+      .stream-error {
+        color: red;
+      }
+      #stream-info,
+      #eyes-predictions,
+      #distraction-predictions {
+        font-family: monospace;
+        white-space: pre-wrap;
+      }
     </style>
-</head>
-<body>
+  </head>
+  <body>
     <h1>ESP32-CAM Stream Viewer</h1>
     <div class="container">
-        <div class="stream">
-            <h2>Live Stream</h2>
-            <img id="video-feed" alt="Live stream">
-            <p id="stream-error"></p>
-        </div>
+      <div class="stream">
+        <h2>Face Stream</h2>
+        <img id="face-video-feed" class="video-feed" alt="Face stream" />
+        <p id="face-stream-error" class="stream-error"></p>
         <div class="predictions">
-            <h2>Predictions</h2>
-            <p>Eyes State: <pre id="eyes-predictions"></pre></p>
-            <p>Driver Actions: <pre id="actions-predictions"></pre></p>
+          <h3>Eyes State Predictions:</h3>
+          <pre id="eyes-predictions"></pre>
         </div>
-        <div class="info">
-            <h2>Stream Info</h2>
-            <pre id="stream-info"></pre>
+      </div>
+      <div class="stream">
+        <h2>Body Stream</h2>
+        <img id="body-video-feed" class="video-feed" alt="Body stream" />
+        <p id="body-stream-error" class="stream-error"></p>
+        <div class="predictions">
+          <h3>Distraction Predictions:</h3>
+          <pre id="distraction-predictions"></pre>
         </div>
+      </div>
+      <div class="info">
+        <h2>Stream Info</h2>
+        <pre id="stream-info"></pre>
+      </div>
     </div>
 
     <script>
-        const videoFeed = document.getElementById('video-feed');
-        const eyesPredictions = document.getElementById('eyes-predictions');
-        const actionsPredictions = document.getElementById('actions-predictions');
-        const streamInfo = document.getElementById('stream-info');
-        const streamError = document.getElementById('stream-error');
+      function startVideoStream(
+        streamUrl,
+        videoFeedId,
+        predictionsId,
+        streamErrorId
+      ) {
+        const videoFeed = document.getElementById(videoFeedId);
+        const predictions = document.getElementById(predictionsId);
+        const streamError = document.getElementById(streamErrorId);
 
-        function updateStreamInfo() {
-            fetch('/stream_info')
-                .then(response => response.json())
-                .then(data => {
-                    streamInfo.textContent = 
-                        `Batch Size: ${data.batch_size}\n` +
-                        `Prediction Threshold: ${data.prediction_threshold}`;
-                })
-                .catch(error => console.error('Error fetching stream info:', error));
-        }
+        const eventSource = new EventSource(streamUrl);
 
-        function startVideoStream() {
-            const eventSource = new EventSource("/video_feed");
-            
-            eventSource.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                
-                // Update video frame
-                videoFeed.src = `data:image/jpeg;base64,${data.image}`;
-                
-                // Update predictions
-                eyesPredictions.textContent = JSON.stringify(data.eyes_predictions, null, 2);
-                actionsPredictions.textContent = JSON.stringify(data.actions_predictions, null, 2);
-            };
+        eventSource.onmessage = function (event) {
+          const data = JSON.parse(event.data);
 
-            eventSource.onerror = function(event) {
-                console.error("EventSource failed:", event);
-                streamError.textContent = "Error loading video stream";
-                eventSource.close();
-                setTimeout(startVideoStream, 5000);  // Try to reconnect after 5 seconds
-            };
-        }
+          // Update video frame
+          videoFeed.src = `data:image/jpeg;base64,${data.image}`;
 
-        startVideoStream();
-        updateStreamInfo();
-        setInterval(updateStreamInfo, 60000);  // Update stream info every minute
+          // Update predictions
+          predictions.textContent = JSON.stringify(data.predictions, null, 2);
+        };
+
+        eventSource.onerror = function (event) {
+          console.error(`EventSource failed for ${streamUrl}:`, event);
+          streamError.textContent = "Error loading video stream";
+          eventSource.close();
+          setTimeout(
+            () =>
+              startVideoStream(
+                streamUrl,
+                videoFeedId,
+                predictionsId,
+                streamErrorId
+              ),
+            5000
+          ); // Try to reconnect after 5 seconds
+        };
+      }
+
+      function updateStreamInfo() {
+        fetch("/stream_info")
+          .then((response) => response.json())
+          .then((data) => {
+            document.getElementById("stream-info").textContent = JSON.stringify(
+              data,
+              null,
+              2
+            );
+          })
+          .catch((error) =>
+            console.error("Error fetching stream info:", error)
+          );
+      }
+
+      startVideoStream(
+        "/face_stream",
+        "face-video-feed",
+        "eyes-predictions",
+        "face-stream-error"
+      );
+      startVideoStream(
+        "/body_stream",
+        "body-video-feed",
+        "distraction-predictions",
+        "body-stream-error"
+      );
+      updateStreamInfo();
+      setInterval(updateStreamInfo, 60000); // Update stream info every minute
     </script>
-</body>
+  </body>
 </html>
