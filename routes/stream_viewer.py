@@ -8,8 +8,12 @@ import logging
 import time
 import threading
 from queue import Queue, Empty
-from helpers.model import classify_eye_batch, classify_main_batch, add_event
+from helpers.model import (
+    classify_eye_batch,
+    classify_main_batch,
+)
 import base64
+from flask_cors import cross_origin
 
 stream_viewer = Blueprint("stream_viewer", __name__)
 
@@ -22,15 +26,18 @@ logger = logging.getLogger(__name__)
 # Constants
 BATCH_SIZE = 5
 PREDICTION_THRESHOLD = 0.7
+EVENT_BATCH_SIZE = 40
 
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 model_dir = os.path.join(base_dir, "models")
 
+frame_count = 0
+
 # Load models and label mappings
 try:
-    eyes_model = load_model(
-        os.path.join(model_dir, "face_eyes_state_MobileNetV3Small_16_30epochs")
-    )
+    # eyes_model = load_model(
+    #     os.path.join(model_dir, "face_eyes_state_MobileNetV3Small_16_30epochs")
+    # )
     actions_model = load_model(
         os.path.join(model_dir, "body_driver_actions_MobileNetV3Small_32_3epochs")
     )
@@ -71,13 +78,14 @@ def predict_batch(batch, model, index_to_label):
 
 
 def process_stream(stream_url):
+    global frame_count
     cap = cv2.VideoCapture(stream_url)
-    bufferFull = True
+    currBufferSize = 0
     eyes_predictions_buffer = []
     actions_predictions_buffer = []
     while True:
-        bufferFull = not bufferFull
         batch_frames = []
+        batch_start_frame_count = frame_count
         for _ in range(BATCH_SIZE):
             ret, frame = cap.read()
             if not ret:
@@ -85,31 +93,41 @@ def process_stream(stream_url):
                 time.sleep(0.1)
                 continue
             batch_frames.append(frame)
+            frame_count += 1
+            currBufferSize += 1
 
         if len(batch_frames) == BATCH_SIZE:
             processed_batch = [preprocess_image(frame) for frame in batch_frames]
-            eyes_predictions = predict_batch(
-                processed_batch, eyes_model, eyes_index_to_label
-            )
+            # eyes_predictions = predict_batch(
+            #     processed_batch, eyes_model, eyes_index_to_label
+            # )
             actions_predictions = predict_batch(
                 processed_batch, actions_model, actions_index_to_label
             )
-            eyes_predictions_buffer += eyes_predictions
+            # eyes_predictions_buffer += eyes_predictions
             actions_predictions_buffer += actions_predictions
 
-            if bufferFull:
-                eye_event_label = classify_eye_batch(eyes_predictions_buffer)
-                action_event_label = classify_main_batch(actions_predictions_buffer)
-                add_event(
-                    {"frameStart": 0, "frameEnd": 100, "label": eye_event_label}, False
-                )
-                add_event(
-                    {"frameStart": 0, "frameEnd": 100, "label": action_event_label},
-                    True,
-                )
+            action_event = 0
 
-                eyes_predictions_buffer = []
+            if currBufferSize >= EVENT_BATCH_SIZE:
+                # eye_event_label = classify_eye_batch(eyes_predictions_buffer)
+                action_event_label = classify_main_batch(actions_predictions_buffer)
+                # add_eye_event(
+                #     {
+                #         "frameStart": batch_start_frame_count,
+                #         "frameEnd": frame_count,
+                #         "label": eye_event_label,
+                #     }
+                # )
+                action_event = {
+                    "frameStart": frame_count - EVENT_BATCH_SIZE,
+                    "frameEnd": frame_count,
+                    "label": action_event_label,
+                }
+
+                # eyes_predictions_buffer = []
                 actions_predictions_buffer = []
+                currBufferSize = 0
 
             middle_frame = batch_frames[BATCH_SIZE // 2]
             _, buffer = cv2.imencode(".jpg", middle_frame)
@@ -118,7 +136,8 @@ def process_stream(stream_url):
             yield (
                 f"data: {{\n"
                 f'data: "image": "{frame_base64}",\n'
-                f'data: "eyes_predictions": {json.dumps(eyes_predictions)},\n'
+                f'data: "action_event": "{action_event}",\n'
+                f'data: "first_frame_num": "{batch_start_frame_count + 1}",\n'
                 f'data: "actions_predictions": {json.dumps(actions_predictions)}\n'
                 f"data: }}\n\n"
             )
@@ -131,8 +150,9 @@ def index():
 
 @stream_viewer.route("/video_feed")
 def video_feed():
-    face_stream_url = "http://192.168.2.175/stream"  # Adjust if needed
-    return Response(process_stream(face_stream_url), mimetype="text/event-stream")
+    face_stream_url = "http://172.20.10.7/stream"  # Adjust if needed
+    res = process_stream(face_stream_url)
+    return Response(res, mimetype="text/event-stream")
 
 
 @stream_viewer.route("/stream_info", methods=["GET"])

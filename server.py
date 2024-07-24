@@ -1,6 +1,7 @@
 from flask import Flask
 from routes.stream_viewer import stream_viewer
 import logging
+from flask_cors import CORS
 
 # Setup logging
 logging.basicConfig(
@@ -10,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.register_blueprint(stream_viewer)
+CORS(app)
 
 
 @app.errorhandler(Exception)

@@ -12,24 +12,34 @@ def classify_eye_batch(eye_batch):
     return Counter(eye_batch).most_common(1)[0][0]
 
 
-def add_event(event, isActionCam):
-    global action_event_list, eye_event_list
-    previousEvent = action_event_list[-1] if isActionCam else eye_event_list[-1]
-    if (
-        previousEvent["label"] == event["label"]
-        and event["frameStart"] - previousEvent["frameEnd"] < 15
-    ):
-        if isActionCam:
-            action_event_list[-1]["frameEnd"] = event["frameEnd"]
-        else:
-            eye_event_list[-1]["frameEnd"] = event["frameEnd"]
-    else:
-        if isActionCam:
-            action_event_list.append(event)
-        else:
-            eye_event_list.append(event)
+# def add_eye_event(event):
+#     global eye_event_list
 
-    return
+#     if len(eye_event_list):
+#         prev_event = eye_event_list[-1]
+#         if (
+#             prev_event["label"] == event["label"]
+#             and event["frameStart"] - prev_event["frameEnd"] < 15
+#         ):
+#             eye_event_list[-1]["frameEnd"] = event["frameEnd"]
+#             return
+
+#     eye_event_list.append(event)
+
+
+# def add_action_event(event):
+#     global action_event_list
+
+#     if len(action_event_list):
+#         prev_event = action_event_list[-1]
+#         if (
+#             prev_event["label"] == event["label"]
+#             and event["frameStart"] - prev_event["frameEnd"] < 15
+#         ):
+#             action_event_list[-1]["frameEnd"] = event["frameEnd"]
+#             return
+
+#     action_event_list.append(event)
 
 
 # Potentially for future use
