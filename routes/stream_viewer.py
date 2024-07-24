@@ -6,7 +6,14 @@ import os
 import json
 import logging
 import time
+import threading
+from queue import Queue, Empty
+from helpers.model import (
+    classify_eye_batch,
+    classify_main_batch,
+)
 import base64
+from flask_cors import cross_origin
 
 stream_viewer = Blueprint("stream_viewer", __name__)
 
@@ -20,9 +27,12 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 5
 BINARY_EYES_STATE_PREDICTION_THRESHOLD = 0.3
 BINARY_DISTRACTION_THRESHOLD = 0.3
+EVENT_BATCH_SIZE = 40
 
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 model_dir = os.path.join(base_dir, "models")
+
+frame_count = 0
 
 # Load models and label mappings
 try:
@@ -83,8 +93,12 @@ def predict_batch(batch, model, index_to_label, is_distraction_model=False):
 
 def process_stream(stream_url, model, index_to_label, is_distraction_model=False):
     cap = cv2.VideoCapture(stream_url)
+    currBufferSize = 0
+    actions_predictions_buffer = []
+    prevEvent = {}
     while True:
         batch_frames = []
+        batch_start_frame_count = frame_count
         for _ in range(BATCH_SIZE):
             ret, frame = cap.read()
             if not ret:
@@ -92,18 +106,50 @@ def process_stream(stream_url, model, index_to_label, is_distraction_model=False
                 time.sleep(0.1)
                 continue
             batch_frames.append(frame)
+            frame_count += 1
+            currBufferSize += 1
 
         if len(batch_frames) == BATCH_SIZE:
             processed_batch = [preprocess_image(frame) for frame in batch_frames]
             predictions = predict_batch(
                 processed_batch, model, index_to_label, is_distraction_model
             )
+            actions_predictions_buffer += predictions
+
+            action_event = 0
+
+            if currBufferSize >= EVENT_BATCH_SIZE:
+                action_event_label = classify_main_batch(actions_predictions_buffer)
+
+                cont = (
+                    1
+                    if "label" in prevEvent and prevEvent["label"] == action_event_label
+                    else 0
+                )
+                action_event = {
+                    "frameStart": frame_count - EVENT_BATCH_SIZE,
+                    "frameEnd": frame_count,
+                    "label": action_event_label,
+                    "cont": cont,
+                }
+                prevEvent = action_event
+
+                # eyes_predictions_buffer = []
+                actions_predictions_buffer = []
+                currBufferSize = 0
 
             middle_frame = batch_frames[BATCH_SIZE // 2]
             _, buffer = cv2.imencode(".jpg", middle_frame)
             frame_base64 = base64.b64encode(buffer).decode("utf-8")
 
-            yield f"data: {json.dumps({'image': frame_base64, 'predictions': predictions})}\n\n"
+            yield (
+                f"data: {{\n"
+                f'data: "image": "{frame_base64}",\n'
+                f'data: "action_event": "{action_event}",\n'
+                f'data: "first_frame_num": "{batch_start_frame_count + 1}",\n'
+                f'data: "actions_predictions": {json.dumps(predictions)}\n'
+                f"data: }}\n\n"
+            )
 
 
 @stream_viewer.route("/")
