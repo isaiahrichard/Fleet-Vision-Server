@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Constants
 BATCH_SIZE_DISTRACTION = 5
 BATCH_SIZE_EYES_STATE = 5
-BINARY_EYES_STATE_PREDICTION_THRESHOLD = 0.3
+BINARY_EYES_STATE_PREDICTION_THRESHOLD = 0.5
 BINARY_DISTRACTION_THRESHOLD = 0.3
 EVENT_BATCH_SIZE_DISTRACTION = 40
 EVENT_BATCH_SIZE_EYES_STATE = 40
@@ -31,7 +31,12 @@ EVENT_BATCH_SIZE_EYES_STATE = 40
 faceCascade = cv2.CascadeClassifier(
     cv2.data.haarcascades + "haarcascade_frontalface_alt.xml"
 )
-eyeCascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
+leftEyeCascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_lefteye_2splits.xml"
+)
+rightEyeCascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_righteye_2splits.xml"
+)
 
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 model_dir = os.path.join(base_dir, "models")
@@ -42,7 +47,8 @@ frame_count = 0
 try:
     binary_eyes_state_model = load_model(
         os.path.join(
-            model_dir, "binary_MobileNetV3Small_32batchsize_1e-06learningrate_4epochs"
+            model_dir,
+            "binary_eyes_CustomCNN_16batchsize_0.001learningrate_100epochs",
         )
     )
     binary_distraction_model = load_model(
@@ -79,12 +85,10 @@ def preprocess_image(frame, target_size=(224, 224)):
 
 
 # the image will already come in in grayscale as the model expects
-def preprocess_image_face(frame, target_size=(224, 224)):
+def preprocess_image_face(frame, target_size=(32, 32)):
     # rgb_image = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-    rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    resized_grayscale_img = cv2.resize(
-        rgb_image, target_size, interpolation=cv2.INTER_AREA
-    )
+    # rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    resized_grayscale_img = cv2.resize(frame, target_size, interpolation=cv2.INTER_AREA)
     normalized_grayscale_img = resized_grayscale_img.astype(np.float32) / 255.0
     return normalized_grayscale_img
 
@@ -195,55 +199,52 @@ def process_stream_face(stream_url, model, index_to_label, is_distraction_model=
                 time.sleep(0.1)
                 continue
 
-            # Convert to grayscale for face and eye detection
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = faceCascade.detectMultiScale(gray, 1.15, 2)
 
-            # Detect faces
-            faces = faceCascade.detectMultiScale(gray, 1.1, 4)
-
-            frame_with_boxes = frame
+            frame_with_boxes = frame.copy()
 
             if len(faces) > 0:
                 fx, fy, fw, fh = faces[0]  # Get the first face
-                # Draw rectangle around the face
                 cv2.rectangle(
                     frame_with_boxes, (fx, fy), (fx + fw, fy + fh), (255, 0, 0), 2
                 )
 
-                # Region of interest for eyes detection
                 roi_gray = gray[fy : fy + fh, fx : fx + fw]
+                roi_color = frame_with_boxes[fy : fy + fh, fx : fx + fw]
 
-                # Detect eyes within the face region
-                eyes = eyeCascade.detectMultiScale(roi_gray, 1.05, 5)
+                # Detect left and right eyes separately
+                left_eye = leftEyeCascade.detectMultiScale(roi_gray, 1.05, 5)
+                right_eye = rightEyeCascade.detectMultiScale(roi_gray, 1.05, 5)
 
                 eye_images = []
-                for ex, ey, ew, eh in eyes:
-                    # Draw rectangle around the eye on the main frame
+
+                # Process left eye
+                if len(left_eye) > 0:
+                    ex, ey, ew, eh = left_eye[0]
                     cv2.rectangle(
-                        frame_with_boxes,
-                        (fx + ex, fy + ey),
-                        (fx + ex + ew, fy + ey + eh),
-                        (0, 255, 0),
-                        1,
+                        roi_color, (ex, ey), (ex + ew, ey + eh), (0, 255, 0), 1
                     )
                     eye_roi = roi_gray[ey : ey + eh, ex : ex + ew]
                     eye_images.append(eye_roi)
-
-                # If only one eye is detected, add None for the second eye
-                if len(eye_images) == 1:
+                else:
                     eye_images.append(None)
-                elif len(eye_images) == 0:
-                    eye_images = [None, None]
-                elif len(eye_images) > 2:
-                    eye_images = eye_images[
-                        :2
-                    ]  # Take only the first two eyes if more are detected
+
+                # Process right eye
+                if len(right_eye) > 0:
+                    ex, ey, ew, eh = right_eye[0]
+                    cv2.rectangle(
+                        roi_color, (ex, ey), (ex + ew, ey + eh), (0, 255, 0), 1
+                    )
+                    eye_roi = roi_gray[ey : ey + eh, ex : ex + ew]
+                    eye_images.append(eye_roi)
+                else:
+                    eye_images.append(None)
 
                 batch_frames.append((frame_with_boxes, eye_images[0], eye_images[1]))
                 frame_count += 1
                 currBufferSize += 1
             else:
-                # If no face detected, add frame with no detections
                 batch_frames.append((frame_with_boxes, None, None))
                 frame_count += 1
                 currBufferSize += 1
@@ -263,14 +264,14 @@ def process_stream_face(stream_url, model, index_to_label, is_distraction_model=
                     # thus we are only making predictions on the overall eyes state based on a single eye
                     # this should work fine for now and it simplifies this code greatly
                     processed_batch.append(
-                        preprocess_image_face(frame_data[0], (224, 224))
+                        preprocess_image_face(frame_data[1], (32, 32))
                     )
                     num_images_in_model_batch += 1
 
                 # in this case, we detected one eye
                 elif frame_data[1] is not None and frame_data[2] is None:
                     processed_batch.append(
-                        preprocess_image_face(frame_data[0], (224, 224))
+                        preprocess_image_face(frame_data[1], (32, 32))
                     )
                     num_images_in_model_batch += 1
 
@@ -462,7 +463,9 @@ def index():
 
 @stream_viewer.route("/face_stream")
 def face_stream():
-    face_stream_url = "http://172.20.10.6/stream"  # Adjust if needed
+    # face_stream_url = "http://172.20.10.6/stream"  # Adjust if needed
+    face_stream_url = "http://172.20.10.5/stream"  # Adjust if needed
+    # face_stream_url = "http://192.168.2.181/stream"  # Adjust if needed
     return Response(
         process_stream_face(
             face_stream_url, binary_eyes_state_model, eyes_index_to_label
@@ -473,7 +476,10 @@ def face_stream():
 
 @stream_viewer.route("/body_stream")
 def body_stream():
-    body_stream_url = "http://172.20.10.3/stream"  # Adjust if needed
+    # body_stream_url = "http://172.20.10.3/stream"  # Adjust if needed
+    body_stream_url = "http://172.20.10.7/stream"  # Adjust if needed
+    # body_stream_url = "http://172.20.10.8/stream"  # Adjust if needed
+    # body_stream_url = "http://192.168.2.180/stream"  # Adjust if needed
     return Response(
         process_stream(
             body_stream_url, binary_distraction_model, distraction_index_to_label, True
