@@ -10,6 +10,10 @@ from helpers.model import (
     classify_main_batch,
 )
 import base64
+import clip
+import torch
+from PIL import Image
+import joblib
 
 stream_viewer = Blueprint("stream_viewer", __name__)
 
@@ -20,12 +24,30 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Constants
+# FACE_STREAM_URL = "http://172.20.10.6/stream"  # ai thinker hotspot aaron
+# FACE_STREAM_URL = "http://192.168.0.102/stream"  # ai thinker home wifi aaron
+# FACE_STREAM_URL = "http://192.168.0.110/stream"  # wrover home wifi aaron
+# FACE_STREAM_URL = "http://172.20.10.4/stream"  # wrover hotspot aaron
+FACE_STREAM_URL = "http://172.20.10.3/stream"
+BODY_STREAM_URL = "http://172.20.10.3/stream"  # ai thinker hotspot aaron
+# BODY_STREAM_URL = "http://192.168.0.104/stream"  # ai thinker home wifi aaron
+# BODY_STREAM_URL = "http://192.168.0.109/stream"  # wrover home wifi aaron
+# BODY_STREAM_URL = "http://172.20.10.5/stream"  # wrover hotspot aaron
 BATCH_SIZE_DISTRACTION = 5
 BATCH_SIZE_EYES_STATE = 5
+# Might be good to not process every frame, also investigate
+# if possible to not use batches at all when we skip enough frames
+DISTRACTION_PROCESS_INTERVAL = 2
+EYES_STATE_PROCESS_INTERVAL = 2
 BINARY_EYES_STATE_PREDICTION_THRESHOLD = 0.5
 BINARY_DISTRACTION_THRESHOLD = 0.3
 EVENT_BATCH_SIZE_DISTRACTION = 40
 EVENT_BATCH_SIZE_EYES_STATE = 40
+# Clip constants
+CLIP_MODEL_NAME = "ViT-L/14"
+CLIP_INPUT_SIZE = 224
+CLIP_PROCESS_INTERVAL = 5  # Process every 5th frame
+CLIP_MODEL_PATH = "dmd29_vitbl14-hypc_429_1000_ft.pkl"
 
 # Setup cv2 classifiers to detect eyes and faces
 faceCascade = cv2.CascadeClassifier(
@@ -41,7 +63,8 @@ rightEyeCascade = cv2.CascadeClassifier(
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 model_dir = os.path.join(base_dir, "models")
 
-frame_count = 0
+frame_count_face = 0
+frame_count_body = 0
 
 # Load models and label mappings
 try:
@@ -76,6 +99,42 @@ except Exception as e:
     logger.error(f"Error loading models or label mappings: {str(e)}")
     raise
 
+# Add global variables for clip model body stream processing
+clip_model = None
+clip_preprocess = None
+clip_classifier = None
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Clip label mappings
+clip_index_to_label = {
+    0: "drinking",
+    1: "hair_and_makeup",
+    2: "phonecall_right",
+    3: "radio",
+    4: "reach_backseat",
+    5: "reach_side",
+    6: "safe_drive",
+    7: "talking_to_passenger",
+    8: "texting_right",
+    9: "yawning",
+}
+
+
+# Initialize CLIP components
+def init_clip():
+    global clip_model, clip_preprocess, clip_classifier
+    clip_model, clip_preprocess = clip.load(CLIP_MODEL_NAME, device)
+    clip_model.eval()
+    clip_classifier = joblib.load(os.path.join(model_dir, CLIP_MODEL_PATH))
+
+
+# load clip stuff
+try:
+    init_clip()
+    logger.info("CLIP model and classifier loaded successfully")
+except Exception as e:
+    logger.error(f"Error loading CLIP model: {str(e)}")
+
 
 def preprocess_image(frame, target_size=(224, 224)):
     rgb_img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -91,6 +150,24 @@ def preprocess_image_face(frame, target_size=(32, 32)):
     resized_grayscale_img = cv2.resize(frame, target_size, interpolation=cv2.INTER_AREA)
     normalized_grayscale_img = resized_grayscale_img.astype(np.float32) / 255.0
     return normalized_grayscale_img
+
+
+def preprocess_frame_clip(frame, preprocess):
+    """
+    Preprocess frame using CLIP's standard preprocessing pipeline
+    - Convert BGR to RGB
+    - Convert to PIL Image
+    - Apply CLIP preprocessing (resizing, normalization)
+    """
+    # Convert BGR to RGB and to PIL
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(rgb_frame)
+
+    # Apply CLIP preprocessing
+    processed = preprocess(pil_image)
+
+    # Add batch dimension
+    return processed.unsqueeze(0)
 
 
 def predict_batch(
@@ -120,14 +197,14 @@ def predict_batch(
 
 
 def process_stream(stream_url, model, index_to_label, is_distraction_model=False):
-    global frame_count
+    global frame_count_body
     cap = cv2.VideoCapture(stream_url)
     currBufferSize = 0
     predictions_buffer = []
     prevEvent = {}
     while True:
         batch_frames = []
-        batch_start_frame_count = frame_count
+        batch_start_frame_count = frame_count_body
         for _ in range(BATCH_SIZE_DISTRACTION):
             ret, frame = cap.read()
             if not ret:
@@ -135,7 +212,7 @@ def process_stream(stream_url, model, index_to_label, is_distraction_model=False
                 time.sleep(0.1)
                 continue
             batch_frames.append(frame)
-            frame_count += 1
+            frame_count_body += 1
             currBufferSize += 1
 
         if len(batch_frames) == BATCH_SIZE_DISTRACTION:
@@ -156,8 +233,8 @@ def process_stream(stream_url, model, index_to_label, is_distraction_model=False
                     else 0
                 )
                 event = {
-                    "frameStart": frame_count - EVENT_BATCH_SIZE_DISTRACTION,
-                    "frameEnd": frame_count,
+                    "frameStart": frame_count_body - EVENT_BATCH_SIZE_DISTRACTION,
+                    "frameEnd": frame_count_body,
                     "label": event_label,
                     "cont": cont,
                 }
@@ -184,14 +261,14 @@ def process_stream(stream_url, model, index_to_label, is_distraction_model=False
 # use cv2 haarcascade classifier to detect eyes
 # then use the binary_eyes_state_model to predict the state of each eye that was detected
 def process_stream_face(stream_url, model, index_to_label, is_distraction_model=False):
-    global frame_count
+    global frame_count_face
     cap = cv2.VideoCapture(stream_url)
     currBufferSize = 0
     predictions_buffer = []
     prevEvent = {}
     while True:
         batch_frames = []
-        batch_start_frame_count = frame_count
+        batch_start_frame_count = frame_count_face
         while len(batch_frames) < BATCH_SIZE_EYES_STATE:
             ret, frame = cap.read()
             if not ret:
@@ -242,11 +319,11 @@ def process_stream_face(stream_url, model, index_to_label, is_distraction_model=
                     eye_images.append(None)
 
                 batch_frames.append((frame_with_boxes, eye_images[0], eye_images[1]))
-                frame_count += 1
+                frame_count_face += 1
                 currBufferSize += 1
             else:
                 batch_frames.append((frame_with_boxes, None, None))
-                frame_count += 1
+                frame_count_face += 1
                 currBufferSize += 1
 
         if len(batch_frames) == BATCH_SIZE_EYES_STATE:
@@ -309,8 +386,8 @@ def process_stream_face(stream_url, model, index_to_label, is_distraction_model=
                     else 0
                 )
                 event = {
-                    "frameStart": frame_count - EVENT_BATCH_SIZE_EYES_STATE,
-                    "frameEnd": frame_count,
+                    "frameStart": frame_count_face - EVENT_BATCH_SIZE_EYES_STATE,
+                    "frameEnd": frame_count_face,
                     "label": event_label,
                     "cont": cont,
                 }
@@ -338,122 +415,61 @@ def process_stream_face(stream_url, model, index_to_label, is_distraction_model=
             )
 
 
-# def process_stream_face(stream_url, model, index_to_label, is_distraction_model=False):
-#     global frame_count
-#     cap = cv2.VideoCapture(stream_url)
-#     currBufferSize = 0
-#     predictions_buffer = []
-#     prevEvent = {}
-#     while True:
-#         batch_frames = []
-#         batch_start_frame_count = frame_count
-#         while len(batch_frames) < BATCH_SIZE_EYES_STATE:
-#             ret, frame = cap.read()
-#             if not ret:
-#                 logger.error(f"Failed to read frame from {stream_url}")
-#                 time.sleep(0.1)
-#                 continue
+def process_stream_clip(url):
+    global frame_count_body, clip_model, clip_preprocess, clip_classifier
 
-#             # Convert to grayscale for face and eye detection
-#             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    if not all([clip_model, clip_preprocess, clip_classifier]):
+        logger.error("CLIP components not initialized")
+        return
 
-#             # Detect faces
-#             faces = faceCascade.detectMultiScale(gray, 1.1, 4)
+    cap = cv2.VideoCapture(url)
 
-#             frame_with_boxes = frame
+    while True:
+        success, frame = cap.read()
+        if not success:
+            logger.error(f"Failed to read frame from {url}")
+            time.sleep(0.1)
+            continue
 
-#             if len(faces) > 0:
-#                 fx, fy, fw, fh = faces[0]  # Get the first face
-#                 # Draw rectangle around the face
-#                 cv2.rectangle(
-#                     frame_with_boxes, (fx, fy), (fx + fw, fy + fh), (255, 0, 0), 2
-#                 )
+        frame_count_body += 1
+        prediction = None
+        prob_score = None
+        prediction_label = "No prediction"  # Initialize at start of loop
 
-#                 # Region of interest for eyes detection
-#                 roi_gray = gray[fy : fy + fh, fx : fx + fw]
+        if frame_count_body % CLIP_PROCESS_INTERVAL == 0:
+            height, width, channels = frame.shape
+            logger.info(f"Frame dimensions: {width}x{height}x{channels}")
+            try:
+                with torch.no_grad():
+                    processed = preprocess_frame_clip(frame, clip_preprocess).to(device)
+                    features = clip_model.encode_image(processed)
+                    features = features.cpu().numpy()
 
-#                 # Detect eyes within the face region
-#                 eyes = eyeCascade.detectMultiScale(roi_gray, 1.1, 4)
+                    prediction = int(clip_classifier.predict(features)[0])
+                    prob_score = clip_classifier.predict_proba(features)[0][prediction]
+                    prediction_label = clip_index_to_label.get(prediction, "Unknown")
 
-#                 eye_images = []
-#                 for ex, ey, ew, eh in eyes:
-#                     # Draw rectangle around the eye on the main frame
-#                     cv2.rectangle(
-#                         frame_with_boxes,
-#                         (fx + ex, fy + ey),
-#                         (fx + ex + ew, fy + ey + eh),
-#                         (0, 255, 0),
-#                         1,
-#                     )
-#                     eye_roi = roi_gray[ey : ey + eh, ex : ex + ew]
-#                     eye_images.append(eye_roi)
+                    logger.info(
+                        f"Frame {frame_count_body}: Prediction={prediction_label}, Probability={prob_score}"
+                    )
 
-#                 # If only one eye is detected, add None for the second eye
-#                 if len(eye_images) == 1:
-#                     eye_images.append(None)
-#                 elif len(eye_images) == 0:
-#                     eye_images = [None, None]
-#                 elif len(eye_images) > 2:
-#                     eye_images = eye_images[
-#                         :2
-#                     ]  # Take only the first two eyes if more are detected
+            except Exception as e:
+                logger.error(f"Error in inference: {str(e)}")
+                prediction_label = "Error"
+                prob_score = None
 
-#                 batch_frames.append((frame_with_boxes, eye_images[0], eye_images[1]))
-#                 frame_count += 1
-#                 currBufferSize += 1
-#             else:
-#                 # If no face detected, add frame with no detections
-#                 batch_frames.append((frame_with_boxes, None, None))
-#                 frame_count += 1
-#                 currBufferSize += 1
+            # Encode frame for streaming
+            _, buffer = cv2.imencode(".jpg", frame)
+            frame_base64 = base64.b64encode(buffer).decode("utf-8")
 
-#         if len(batch_frames) == BATCH_SIZE_EYES_STATE:
-#             # Process the batch
-#             processed_batch = [
-#                 preprocess_image_face(frame_data[0], (224, 224))
-#                 for frame_data in batch_frames
-#             ]
-#             predictions = predict_batch(
-#                 processed_batch, model, index_to_label, is_distraction_model
-#             )
-#             predictions_buffer += predictions
-
-#             event = 0
-
-#             if currBufferSize >= EVENT_BATCH_SIZE_EYES_STATE:
-#                 event_label = classify_main_batch(predictions_buffer)
-
-#                 cont = (
-#                     1
-#                     if "label" in prevEvent and prevEvent["label"] == event_label
-#                     else 0
-#                 )
-#                 event = {
-#                     "frameStart": frame_count - EVENT_BATCH_SIZE_EYES_STATE,
-#                     "frameEnd": frame_count,
-#                     "label": event_label,
-#                     "cont": cont,
-#                 }
-#                 prevEvent = event
-
-#                 predictions_buffer = []
-#                 currBufferSize = 0
-
-#             middle_frame_data = batch_frames[BATCH_SIZE_EYES_STATE // 2]
-#             middle_frame, left_eye, right_eye = middle_frame_data
-
-#             # Encode the main frame (now with bounding boxes for face and eyes)
-#             _, buffer = cv2.imencode(".jpg", middle_frame)
-#             frame_base64 = base64.b64encode(buffer).decode("utf-8")
-
-#             yield (
-#                 f"data: {{\n"
-#                 f'data: "image": "{frame_base64}",\n'
-#                 f'data: "event": "{event}",\n'
-#                 f'data: "first_frame_num": "{batch_start_frame_count + 1}",\n'
-#                 f'data: "predictions": {json.dumps(predictions)}\n'
-#                 f"data: }}\n\n"
-#             )
+            yield (
+                f"data: {{\n"
+                f'data: "image": "{frame_base64}",\n'
+                f'data: "prediction": "{prediction_label}",\n'
+                f'data: "probability": "{prob_score}",\n'
+                f'data: "frame_number": "{frame_count_body}"\n'
+                f"data: }}\n\n"
+            )
 
 
 @stream_viewer.route("/")
@@ -463,12 +479,9 @@ def index():
 
 @stream_viewer.route("/face_stream")
 def face_stream():
-    # face_stream_url = "http://172.20.10.6/stream"  # Adjust if needed
-    face_stream_url = "http://172.20.10.5/stream"  # Adjust if needed
-    # face_stream_url = "http://192.168.2.181/stream"  # Adjust if needed
     return Response(
         process_stream_face(
-            face_stream_url, binary_eyes_state_model, eyes_index_to_label
+            FACE_STREAM_URL, binary_eyes_state_model, eyes_index_to_label
         ),
         mimetype="text/event-stream",
     )
@@ -476,14 +489,18 @@ def face_stream():
 
 @stream_viewer.route("/body_stream")
 def body_stream():
-    # body_stream_url = "http://172.20.10.3/stream"  # Adjust if needed
-    body_stream_url = "http://172.20.10.7/stream"  # Adjust if needed
-    # body_stream_url = "http://172.20.10.8/stream"  # Adjust if needed
-    # body_stream_url = "http://192.168.2.180/stream"  # Adjust if needed
     return Response(
         process_stream(
-            body_stream_url, binary_distraction_model, distraction_index_to_label, True
+            BODY_STREAM_URL, binary_distraction_model, distraction_index_to_label, True
         ),
+        mimetype="text/event-stream",
+    )
+
+
+@stream_viewer.route("/body_stream_clip")
+def body_stream_clip():
+    return Response(
+        process_stream_clip(BODY_STREAM_URL),
         mimetype="text/event-stream",
     )
 
@@ -491,7 +508,7 @@ def body_stream():
 @stream_viewer.route("/stream_info", methods=["GET"])
 def get_stream_info():
     return {
-        "BATCH_SIZE_EYES_STATE": BATCH_SIZE_DISTRACTION,
+        "BATCH_SIZE_DISTRACTION": BATCH_SIZE_DISTRACTION,
         "BATCH_SIZE_EYES_STATE": BATCH_SIZE_EYES_STATE,
         "BINARY_EYES_STATE_PREDICTION_THRESHOLD": BINARY_EYES_STATE_PREDICTION_THRESHOLD,
         "BINARY_DISTRACTION_THRESHOLD": BINARY_DISTRACTION_THRESHOLD,
